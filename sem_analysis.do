@@ -1,20 +1,16 @@
 /*
 STRUCTURAL EQUATION MODELLING IN STATA
-Portfolio owner: Jesca Birungi Nalugya
+Portfolio owner: Jesca Birungi
 
 Adapted tutorial, not an original empirical study.
-Original tutorial: Meghan K. Cain, Structural Equation Modeling using Stata.
-https://doi.org/10.35566/jbds/v1n2/p7
+Original tutorial: Meghan K. Cain, Structural Equation Modeling using Stata. https://doi.org/10.35566/jbds/v1n2/p7
 Source materials: https://www.stata.com/users/mcain/JBDS_SEM
 
-This edition reorganises the supplied tutorial, adds explanatory comments,
-data checks, relative paths, logging and a fixed bootstrap seed. Model
+This edition reorganises the supplied tutorial, adds explanatory comments, data checks, relative paths, logging and a fixed bootstrap seed. Model
 specifications follow Cain's tutorial. No new results are claimed here.
 
-Requirements: licensed Stata 17 or later (target; not runtime-tested).
-Run from this folder with math.dta and crime.dta in a local data/ folder.
-Data and saved SEM Builder diagrams are deliberately not distributed.
-The script clears data in memory; save current work before running.
+Requirements: licensed Stata 17 or later (target; not runtime-tested). Run from this folder with math.dta and crime.dta in a local data/ folder.
+Data and saved SEM Builder diagrams are deliberately not distributed. The script clears data in memory; save current work before running.
 */
 
 version 17.0
@@ -77,6 +73,7 @@ estat gof, stats(all)
 * 4. Model diagnostics and an illustrative residual covariance.
 estimates restore path_ml
 estat mindices
+
 * The following covariance is a tutorial example, not an automatic response
 * to modification indices. Any applied use needs substantive justification.
 sem (SES -> ses1-ses4 math), cov(e.ses1*e.ses2)
@@ -92,16 +89,13 @@ estat teffects
 sem, coeflegend
 
 * Fixed seed supports repeatability; inspect failed replications in output.
-bootstrap indirect=(_b[ratio:SES]*_b[math:ratio]), ///
-    reps(`bootstrap_reps') seed(20261111) nodots: ///
-    sem (SES -> ses1-ses4 ratio math) (ratio -> math)
+bootstrap indirect=(_b[ratio:SES]*_b[math:ratio]), reps(`bootstrap_reps') seed(20261111) nodots: sem (SES -> ses1-ses4 ratio math) (ratio -> math)
 estat bootstrap, percentile
 
 * 6. Group analysis by school type.
 * Retain Stata's default group constraints from the source example.
 * Consult help sem_group_options before changing equality constraints.
-sem (SES -> ses1-ses4) (SES -> math ratio) (ratio -> math), ///
-    group(schtype) byparm
+sem (SES -> ses1-ses4) (SES -> math ratio) (ratio -> math), group(schtype) byparm
 estimates store group_model
 estat teffects, nodirect nototal compact
 sem, coeflegend byparm
@@ -112,8 +106,7 @@ local n0 = r(N)
 quietly count if schtype == 1
 local n1 = r(N)
 if `n0' > 0 & `n1' > 0 {
-    testnl _b[ratio:0bn.schtype#c.SES]*_b[math:0bn.schtype#c.ratio] = ///
-        _b[ratio:1.schtype#c.SES]*_b[math:1.schtype#c.ratio]
+    testnl _b[ratio:0bn.schtype#c.SES]*_b[math:0bn.schtype#c.ratio] = _b[ratio:1.schtype#c.SES]*_b[math:1.schtype#c.ratio]
 }
 estat ginvariant
 
@@ -127,9 +120,7 @@ summarize lncrime0-lncrime3
 misstable summarize lncrime0-lncrime3
 * Loadings 0,1,2,3 encode equally spaced measurement occasions.
 * The eps constraint specifies equal residual variances over time.
-sem (Intercept@1 -> lncrime0-lncrime3) ///
-    (Slope -> lncrime0@0 lncrime1@1 lncrime2@2 lncrime3@3), ///
-    nocons means(Intercept Slope) var(e.lncrime0-lncrime3@eps)
+sem (Intercept@1 -> lncrime0-lncrime3) (Slope -> lncrime0@0 lncrime1@1 lncrime2@2 lncrime3@3), nocons means(Intercept Slope) var(e.lncrime0-lncrime3@eps)
 estimates store growth_sem
 
 * 8. Random-intercept/random-slope representation with gsem.
