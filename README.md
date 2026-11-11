@@ -1,6 +1,6 @@
 # Structural equation modelling in Stata
 
-A commented adaptation of a published SEM tutorial, prepared for Jesca Birungi Nalugya's biostatistics analysis portfolio. It provides code examples for students and prospective employers. It is a tutorial adaptation, not an original research study or evidence of independently developed methods.
+A commented adaptation of a published SEM tutorial, prepared for Jesca Birungi's biostatistics analysis portfolio. It provides code examples for students and prospective employers. It is a tutorial adaptation, not an original research study or evidence of independently developed methods.
 
 ## What the script covers
 
