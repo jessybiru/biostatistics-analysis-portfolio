@@ -31,8 +31,8 @@ Use the source linked in Cain's article: [Stata tutorial materials](https://www.
 ## Run
 
 1. Save any work open in Stata; the script starts with `clear all`.
-2. Download the repository and place `math.dta` and `crime.dta` in a `data` folder inside `biostatistics-analysis-portfolio`.
-3. In Stata 17 or later, set the working directory to `biostatistics-analysis-portfolio`, the folder containing `sem_analysis.do`.
+2. Place `math.dta` and `crime.dta` in a local `data` folder inside `sem-stata`.
+3. In Stata 17 or later, set the working directory to `sem-stata`, the folder containing `sem_analysis.do`.
 4. Run `do sem_analysis.do`.
 5. Review `outputs/sem_analysis.log`, especially sample sizes, convergence, warnings and failed bootstrap replications. Re-running replaces this log.
 
