@@ -1,7 +1,5 @@
 # Biostatistics Analysis Portfolio
 
-**Jesca Birungi**
-
 R Markdown and Stata scripts documenting my analytical work and supporting students learning applied biostatistics.
 Datasets are not included.
 
