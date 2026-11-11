@@ -1,0 +1,19 @@
+# Local datasets and results are not part of the public portfolio.
+**/data/
+**/outputs/
+*.dta
+*.csv
+*.tsv
+*.xlsx
+*.xls
+*.rds
+*.RData
+*.Rhistory
+*.log
+*.smcl
+*.ster
+*.stsem
+*.bak
+*.swp
+.DS_Store
+Thumbs.db
