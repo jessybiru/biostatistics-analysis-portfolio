@@ -14,4 +14,3 @@ Datasets are not included.
 
 Each folder contains code, data requirements, source attribution and instructions. Review its README before running the code.
 
-These portfolio editions have been reviewed but still require execution in R or Stata before being described as tested.
