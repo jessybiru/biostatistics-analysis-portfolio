@@ -1,0 +1,691 @@
+---
+
+title: "ESS data cleaning and harmonisation"
+author: "Jesca Birungi"
+subtitle: "Code portfolio: locally supplied 2014 and 2023 survey files"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = TRUE, message = FALSE)
+
+library(tidyverse)  # data import, cleaning, summaries, and plotting
+```
+
+This cleaning-only workflow is adapted from my supplied ESS R Markdown file.
+It contains no fitted statistical models or multiple imputation. Datasets and
+rendered results are excluded from the public repository. Survey-year labels
+identify the supplied files; they are not verified individual interview years.
+Check the exact dataset editions and variable documentation before use.
+
+## 1. Set Paths and Helper Functions
+
+This chunk sets the folder where the raw ESS files are stored and where the cleaned files will be saved.
+
+```{r set-paths}
+data_dir <- "data"
+output_dir <- "outputs"
+# These study-specific choices reproduce the supplied workflow.
+# EE/IL exclusion reasons were not supplied; review before other applications.
+minimum_age <- 25
+exclude_countries <- c("EE", "IL")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+for (file in c("ess2014.csv", "ess2023.csv")) {
+  if (!file.exists(file.path(data_dir, file))) {
+    stop("Missing data/", file, ". See README.md for local data requirements.")
+  }
+}
+```
+
+This chunk defines helper functions used later in the cleaning process. `freq_table()` creates simple frequency tables, `na_codes()` converts special ESS missing-value codes to `NA`, and `add_missing_columns()` ensures both survey rounds have the same selected variables before merging.
+
+```{r helper-functions}
+freq_table <- function(data, var) {
+  data %>%
+    count({{ var }}, name = "n") %>%
+    mutate(percent = round(100 * n / sum(n), 1))
+}
+
+na_codes <- function(x, codes) {
+  if_else(x %in% codes, NA_real_, as.numeric(x))
+}
+
+add_missing_columns <- function(data, vars) {
+  missing_vars <- setdiff(vars, names(data))
+  for (var in missing_vars) data[[var]] <- NA_real_
+  data
+}
+
+# Stop on missing required fields, rather than silently manufacturing an
+# entirely missing outcome. Only documented optional fields are padded.
+read_ess <- function(filename, year, required_smoking, expected_round) {
+  data <- read_csv(file.path(data_dir, filename),
+                   col_types = cols(.default = col_character()),
+                   show_col_types = FALSE)
+  required <- c("cntry", "eisced", "eduyrs", "hinctnta", "hincfel",
+                "mnactic", "isco08", "agea", "gndr", "maritalb",
+                required_smoking)
+  absent <- setdiff(required, names(data))
+  if (length(absent)) stop(filename, ": missing required fields: ",
+                           paste(absent, collapse = ", "))
+  data$cntry <- toupper(trimws(data$cntry))
+  if (any(is.na(data$cntry) | !grepl("^[A-Z]{2}$", data$cntry))) {
+    stop(filename, ": missing or malformed country codes.")
+  }
+  if ("essround" %in% names(data)) {
+    rounds <- unique(na.omit(data$essround))
+    if (length(rounds) != 1L || rounds != as.character(expected_round)) {
+      stop(filename, ": essround does not match the expected round.")
+    }
+  }
+  if ("idno" %in% names(data)) {
+    if (any(is.na(data$idno)) || anyDuplicated(data[c("cntry", "idno")])) {
+      stop(filename, ": missing or duplicate country/respondent keys.")
+    }
+  } else {
+    warning(filename, ": idno absent; respondent-key duplicates cannot be checked.")
+  }
+  numeric_vars <- intersect(c(setdiff(keep_vars, c("cntry", "survey_year")),
+                              "dweight", "pspwght", "pweight"), names(data))
+  for (var in numeric_vars) {
+    converted <- suppressWarnings(parse_double(data[[var]], na = c("", "NA")))
+    if (any(!is.na(data[[var]]) & nzchar(data[[var]]) &
+            data[[var]] != "NA" & is.na(converted))) {
+      stop(filename, ": unexpected nonnumeric values in ", var)
+    }
+    data[[var]] <- converted
+  }
+  optional <- setdiff(keep_vars, c(required, "survey_year"))
+  absent_optional <- setdiff(optional, names(data))
+  if (length(absent_optional)) message(filename, ": absent optional fields: ",
+                                       paste(absent_optional, collapse = ", "))
+  data <- data %>%
+    mutate(survey_year = year, source_row = row_number()) %>%
+    add_missing_columns(keep_vars) %>%
+    select(all_of(keep_vars), source_row,
+           any_of(c("idno", "essround", "dweight", "pspwght", "pweight",
+                    "psu", "stratum")))
+  data
+}
+```
+
+## 2. Import and Merge Data
+
+This chunk lists the variables needed for the study. The list includes smoking variables, socioeconomic variables, demographic variables, country, survey year, and weights.
+
+```{r define-variables-to-keep}
+keep_vars <- c(
+  "survey_year", "cntry",
+  "cgtsmke", "cgtsday", "cgtsmok",
+  "eisced", "eduyrs", "hinctnta", "hincfel",
+  "mnactic", "isco08",
+  "agea", "gndr", "maritalb",
+  "anweight"
+)
+```
+
+This chunk imports the 2014 ESS data, adds a survey year variable, adds any missing variables from `keep_vars`, and keeps only the selected variables.
+
+```{r import-ess-2014}
+ess2014 <- read_ess("ess2014.csv", 2014, c("cgtsmke", "cgtsday"), 7)
+```
+
+This chunk imports the 2023 ESS data, adds a survey year variable, adds any missing variables from `keep_vars`, and keeps only the selected variables.
+
+```{r import-ess-2023}
+ess2023 <- read_ess("ess2023.csv", 2023, "cgtsmok", 11)
+```
+
+This chunk combines the 2014 and 2023 datasets into one merged dataset.
+
+```{r merge-survey-rounds}
+ess_merged <- bind_rows(ess2014, ess2023)
+sample_flow <- tibble(stage = "Imported", n = nrow(ess_merged))
+
+freq_table(ess_merged, survey_year)
+```
+
+## 3. Define Countries and Keep Common Survey Countries
+
+This chunk defines country labels so that country codes are easier to interpret in tables and models.
+
+```{r define-country-labels}
+country_labels <- tribble(
+  ~cntry, ~country_name,
+  "AT", "Austria",
+  "BE", "Belgium",
+  "CH", "Switzerland",
+  "DE", "Germany",
+  "EE", "Estonia",
+  "ES", "Spain",
+  "FI", "Finland",
+  "FR", "France",
+  "GB", "United Kingdom",
+  "HU", "Hungary",
+  "IE", "Ireland",
+  "IL", "Israel",
+  "LT", "Lithuania",
+  "NL", "Netherlands",
+  "NO", "Norway",
+  "PL", "Poland",
+  "PT", "Portugal",
+  "SE", "Sweden",
+  "SI", "Slovenia"
+)
+```
+
+This chunk identifies countries present in both 2014 and 2023, then keeps only respondents from those common countries.
+
+```{r keep-common-countries}
+common_countries <- ess_merged %>%
+  distinct(survey_year, cntry) %>%
+  count(cntry) %>%
+  filter(n == 2) %>%
+  pull(cntry)
+
+ess_merged <- ess_merged %>%
+  filter(cntry %in% common_countries)
+if (!nrow(ess_merged)) stop("No common-country observations remain.")
+sample_flow <- bind_rows(sample_flow,
+  tibble(stage = "Common countries", n = nrow(ess_merged)))
+
+length(common_countries)
+sort(common_countries)
+freq_table(ess_merged, survey_year)
+```
+
+
+## 4. Check Raw Household Income Missingness
+
+This chunk creates a raw household income missingness reason variable before the ESS missing codes are converted to `NA`. This must be done before cleaning `hinctnta`, because the original codes identify the reason for missingness.
+
+```{r create-income-missing-reason}
+ess_income_missing <- ess_merged %>%
+  left_join(country_labels, by = "cntry") %>%
+  mutate(country_name = coalesce(country_name, cntry)) %>%
+  mutate(
+    income_missing_reason = case_when(
+      hinctnta == 77 ~ "Refusal",
+      hinctnta == 88 ~ "Don't know",
+      hinctnta == 99 ~ "No answer",
+      is.na(hinctnta) ~ "System missing",
+      hinctnta %in% 1:10 ~ "Observed",
+      TRUE ~ "Unexpected code"
+    )
+  )
+```
+
+This chunk summarises household income missingness by country, survey year, and reason for missingness.
+
+```{r income-missing-by-country-year}
+income_missing_by_country_year <- ess_income_missing %>%
+  count(country_name,survey_year,income_missing_reason, name = "n") %>%
+  group_by(country_name,  survey_year) %>%
+  mutate(percent = round(100 * n / sum(n), 1)) %>%
+  ungroup() %>%
+  arrange(country_name, survey_year, income_missing_reason)
+
+income_missing_by_country_year
+```
+
+This chunk keeps only the missing household income cases, making it easier to inspect whether missingness is mainly due to refusal, don't know, no answer, or system missing values.
+
+```{r income-missing-reasons-only}
+income_missing_reasons_only <- income_missing_by_country_year %>%
+  filter(income_missing_reason != "Observed")
+
+income_missing_reasons_only
+```
+
+This chunk gives a compact summary of household income missingness by country and survey year.
+
+```{r income-missing-summary}
+income_missing_summary <- ess_income_missing %>%
+  group_by(country_name, cntry, survey_year) %>%
+  summarise(
+    n_total = n(),
+    n_observed = sum(hinctnta %in% 1:10),
+    n_missing = sum(hinctnta %in% c(77, 88, 99) | is.na(hinctnta)),
+    n_unexpected = sum(!is.na(hinctnta) & !hinctnta %in% c(1:10, 77, 88, 99)),
+    pct_missing = round(100 * n_missing / n_total, 1),
+    n_refusal = sum(hinctnta == 77, na.rm = TRUE),
+    n_dont_know = sum(hinctnta == 88, na.rm = TRUE),
+    n_no_answer = sum(hinctnta == 99, na.rm = TRUE),
+    n_system_missing = sum(is.na(hinctnta)),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(pct_missing), country_name, survey_year)
+
+income_missing_summary
+```
+
+This chunk visualises the percentage of missing household income by country and survey year before recoding.
+```{r plot-income-missing-by-country-year}
+income_missing_summary %>%
+  ggplot(
+    aes(
+      x = pct_missing,
+      y = reorder(country_name, pct_missing),
+      fill = factor(survey_year)
+    )
+  ) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  labs(
+    title = "Missing household income by country and survey year",
+    x = "Missing household income (%)",
+    y = NULL,
+    fill = "Survey year"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "top",
+    panel.grid.minor = element_blank()
+  )
+```
+
+This chunk visualises the reasons household income is missing by country and survey year before recoding.
+
+```{r plot-income-missing-reasons}
+income_missing_reasons_only %>%
+  ggplot(
+    aes(
+      x = percent,
+      y = reorder(country_name, percent),
+      fill = income_missing_reason
+    )
+  ) +
+  geom_col(width = 0.75) +
+  facet_wrap(~ survey_year) +
+  labs(
+    title = "Reasons for missing household income by country and survey year",
+    x = "Percentage of respondents (%)",
+    y = NULL,
+    fill = "Missingness reason"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "top",
+    panel.grid.minor = element_blank()
+  )
+```
+
+
+## 5. Recode Variables
+
+Validate expected raw domains before recoding; stop for unexpected values
+rather than silently assigning a substantive category. These specifications
+follow the supplied workflow and need checking against the user's data editions.
+
+```{r validate-raw-codes}
+valid_codes <- list(
+  cgtsmke = c(1:5, 7:9), cgtsmok = c(1:6, 7:9),
+  cgtsday = c(0:665, 666, 777, 888, 999),
+  eisced = c(0:7, 55, 77, 88, 99), eduyrs = c(0:76, 77, 88, 99),
+  hinctnta = c(1:10, 77, 88, 99), hincfel = c(1:4, 7:9),
+  mnactic = c(1:9, 66, 77, 88, 99),
+  maritalb = c(1:6, 77, 88, 99), agea = c(0:123, 999), gndr = c(1, 2, 7, 8, 9)
+)
+for (var in names(valid_codes)) {
+  unexpected <- setdiff(unique(na.omit(ess_merged[[var]])), valid_codes[[var]])
+  if (length(unexpected)) stop("Review unexpected codes in ", var, ": ",
+                               paste(unexpected, collapse = ", "))
+}
+# Keep the source category for auditing when excluding nonclassifiable education.
+ess_merged <- ess_merged %>% mutate(eisced_original = eisced)
+```
+
+
+This chunk applies the supplied special-code rules and excludes nonclassifiable education responses from the grouped measure. The original education code is retained for auditing.
+
+```{r recode-special-missing-values}
+ess_clean <- ess_merged %>%
+  mutate(
+    cgtsmke = na_codes(cgtsmke, c(7, 8, 9)),
+    cgtsmok = na_codes(cgtsmok, c(7, 8, 9)),
+    cgtsday = na_codes(cgtsday, c(666, 777, 888, 999)),
+    # 55 is an "Other" response, excluded from this custom grouping.
+    eisced = na_codes(eisced, c(55, 77, 88, 99)),
+    eduyrs = na_codes(eduyrs, c(77, 88, 99)),
+    hinctnta = na_codes(hinctnta, c(77, 88, 99)),
+    hincfel = na_codes(hincfel, c(7, 8, 9)),
+    mnactic = na_codes(mnactic, c(66, 77, 88, 99)),
+    isco08 = na_codes(isco08, c(66666, 77777, 88888, 99999)),
+    maritalb = na_codes(maritalb, c(77, 88, 99)),
+    agea = na_codes(agea, 999),
+    gndr = na_codes(gndr, c(7, 8, 9))
+  )
+```
+
+### Smoking outcomes
+
+This chunk creates the current smoking variable. The coding differs between 2014 and 2023, so the recoding is done separately by survey year.
+
+```{r recode-current-smoking}
+ess_clean <- ess_clean %>%
+  mutate(
+    current_smoking = case_when(
+      survey_year == 2014 & cgtsmke %in% c(1, 2) ~ 1,
+      survey_year == 2014 & cgtsmke %in% c(3, 4, 5) ~ 0,
+      survey_year == 2023 & cgtsmok %in% c(1, 2, 3) ~ 1,
+      survey_year == 2023 & cgtsmok %in% c(4, 5, 6) ~ 0,
+      TRUE ~ NA_real_
+    )
+  )
+```
+
+This chunk creates the ever smoking variable, which identifies respondents who have ever smoked, even if only a few times.
+
+```{r recode-ever-smoking}
+ess_clean <- ess_clean %>%
+  mutate(
+    ever_smoking = case_when(
+      survey_year == 2014 & cgtsmke %in% c(1, 2, 3, 4) ~ 1,
+      survey_year == 2014 & cgtsmke == 5 ~ 0,
+      survey_year == 2023 & cgtsmok %in% c(1, 2, 3, 4, 5) ~ 1,
+      survey_year == 2023 & cgtsmok == 6 ~ 0,
+      TRUE ~ NA_real_
+    )
+  )
+```
+
+This chunk creates the daily 10+ cigarettes variable. In 2014, this uses daily smoking plus the reported number of cigarettes per day; in 2023, this category is directly available in `cgtsmok`.
+
+```{r recode-daily-10plus-smoking}
+ess_clean <- ess_clean %>%
+  mutate(
+    daily_10plus_smoker = case_when(
+      survey_year == 2014 & cgtsmke == 1 & is.na(cgtsday) ~ NA_real_,
+      survey_year == 2014 & cgtsmke == 1 & cgtsday >= 10 ~ 1,
+      survey_year == 2014 & cgtsmke == 1 & cgtsday < 10 ~ 0,
+      survey_year == 2014 & cgtsmke %in% c(2, 3, 4, 5) ~ 0,
+      survey_year == 2023 & cgtsmok == 1 ~ 1,
+      survey_year == 2023 & cgtsmok %in% c(2, 3, 4, 5, 6) ~ 0,
+      TRUE ~ NA_real_
+    )
+  )
+```
+
+This chunk creates the broader daily smoker variable, which identifies all daily smokers regardless of whether they smoke 10 or more cigarettes per day.
+
+```{r recode-daily-smoking}
+ess_clean <- ess_clean %>%
+  mutate(
+    daily_smoker = case_when(
+      survey_year == 2014 & cgtsmke == 1 ~ 1,
+      survey_year == 2014 & cgtsmke %in% c(2, 3, 4, 5) ~ 0,
+      survey_year == 2023 & cgtsmok %in% c(1, 2) ~ 1,
+      survey_year == 2023 & cgtsmok %in% c(3, 4, 5, 6) ~ 0,
+      TRUE ~ NA_real_
+    )
+  )
+```
+
+### Social economic variables
+
+This chunk recodes education into low, medium, and high categories.
+
+```{r recode-education}
+ess_clean <- ess_clean %>%
+  mutate(
+    education = case_when(
+      eisced %in% c(1, 2) ~ "Low",
+      eisced %in% c(3, 4) ~ "Medium",
+      eisced %in% c(5, 6, 7) ~ "High"
+    ),
+    education = factor(education, levels = c("Low", "Medium", "High"))
+  )
+```
+
+This chunk recodes household income into income deciles and broader income groups.
+
+```{r recode-household-income}
+ess_clean <- ess_clean %>%
+  mutate(
+    income_group = case_when(
+      hinctnta %in% 1:3 ~ "Low",
+      hinctnta %in% 4:7 ~ "Middle",
+      hinctnta %in% 8:10 ~ "High"
+    ),
+    income_group = factor(
+      income_group,
+      levels = c("Low", "Middle", "High")
+    ),
+
+    income_group_missing = case_when(
+      hinctnta %in% 1:3 ~ "Low",
+      hinctnta %in% 4:7 ~ "Middle",
+      hinctnta %in% 8:10 ~ "High",
+      is.na(hinctnta) ~ "Missing income"
+    ),
+    income_group_missing = factor(
+      income_group_missing,
+      levels = c("Low", "Middle", "High", "Missing income")
+    ),
+
+    income_decile = factor(hinctnta, levels = 1:10, ordered = TRUE)
+  )
+ 
+```
+
+This chunk recodes subjective income feeling into three ordered categories.
+
+```{r recode-income-feeling}
+ess_clean <- ess_clean %>%
+  mutate(
+    income_feeling = case_when(
+      hincfel == 1 ~ "Living comfortably",
+      hincfel == 2 ~ "Coping",
+      hincfel %in% c(3, 4) ~ "Difficult / very difficult"
+    ),
+    income_feeling = factor(
+      income_feeling,
+      levels = c("Living comfortably", "Coping", "Difficult / very difficult"),
+      ordered = TRUE
+    )
+  )
+```
+
+
+
+This chunk recodes employment status into four broad categories.
+
+```{r recode-employment}
+ess_clean <- ess_clean %>%
+  mutate(
+    employment = case_when(
+      mnactic == 1 ~ "Employed",
+      mnactic %in% c(3, 4) ~ "Unemployed",
+      mnactic == 6 ~ "Retired",
+      mnactic %in% c(2, 5, 7, 8, 9) ~ "Inactive (other)"
+    ),
+    employment = factor(
+      employment,
+      levels = c("Employed", "Unemployed", "Retired", "Inactive (other)")
+    )
+  )
+```
+
+This chunk creates custom occupation groups from four-digit-range codes, keeps armed forces separate, and leaves unrecognised shorter codes unclassified. Review code formats against the source documentation.
+
+```{r recode-occupation}
+armed_forces_codes <- c(0, 100, 110, 200, 210, 300, 310)
+
+ess_clean <- ess_clean %>%
+  mutate(
+    isco_major = case_when(
+      isco08 %in% armed_forces_codes ~ 0,
+      isco08 >= 1000 & isco08 <= 9999 ~ floor(isco08 / 1000),
+      TRUE ~ NA_real_
+    ),
+    occupation = case_when(
+      isco_major %in% c(1, 2, 3) ~ "Non-manual (higher)",
+      isco_major %in% c(4, 5) ~ "Non-manual (lower)",
+      isco_major == 0 ~ "Armed forces",
+      isco_major %in% c(6, 7, 8, 9) ~ "Manual"
+    ),
+    occupation = factor(
+      occupation,
+      levels = c("Non-manual (higher)", "Non-manual (lower)", "Manual", "Armed forces")
+    )
+  )
+```
+
+### Demographic variables
+
+This chunk recodes demographic variables and adds country names.
+
+```{r recode-demographic-variables}
+ess_clean <- ess_clean %>%
+  mutate(
+    sex = factor(gndr, levels = c(1, 2), labels = c("Male", "Female")),
+    marital = case_when(
+      maritalb %in% c(1, 2) ~ "Married/Civil union",
+      maritalb %in% c(3, 4) ~ "Separated/Divorced",
+      maritalb == 5 ~ "Widowed",
+      maritalb == 6 ~ "Never married"
+    ),
+    marital = factor(
+      marital,
+      levels = c("Married/Civil union", "Never married", "Separated/Divorced", "Widowed")
+    ),
+    age_group = cut(
+      agea,
+      breaks = c(24, 29, 39, 49, 59, 69, Inf),
+      labels = c("25-29", "30-39", "40-49", "50-59", "60-69", "70+")
+    )
+  ) %>%
+  left_join(country_labels, by = "cntry") %>%
+  mutate(country_name = coalesce(country_name, cntry))
+```
+
+## 6. Apply Final Analytical Sample Restrictions
+
+This chunk restricts the analytical sample to respondents aged 25 years and older.
+
+```{r restrict-age}
+ess_clean <- ess_clean %>%
+  filter(!is.na(agea), agea >= minimum_age)
+sample_flow <- bind_rows(sample_flow,
+  tibble(stage = "Age restriction", n = nrow(ess_clean)))
+```
+
+This chunk applies the original study-specific Estonia/Israel exclusion.
+The supplied file did not explain its rationale. This is not an ESS eligibility
+rule; review `exclude_countries` before applying it elsewhere.
+
+```{r exclude-ineligible-countries}
+ess_clean <- ess_clean %>%
+  filter(!cntry %in% exclude_countries)
+if (!nrow(ess_clean)) stop("Sample restrictions removed every observation.")
+sample_flow <- bind_rows(sample_flow,
+  tibble(stage = "Country exclusions", n = nrow(ess_clean)))
+sample_flow
+```
+
+This chunk formats the survey year variable and orders the final cleaned dataset columns.
+
+```{r format-and-order-final-clean-data}
+ess_clean <- ess_clean %>%
+  mutate(survey_year = factor(survey_year, levels = c(2014, 2023))) %>%
+  select(
+    survey_year, cntry, country_name, source_row,
+    any_of(c("idno", "essround", "dweight", "pspwght", "pweight", "psu", "stratum")),
+    agea, age_group, sex, marital, education, eduyrs, income_group, income_decile, income_feeling,
+    employment, occupation, current_smoking, ever_smoking, daily_smoker, daily_10plus_smoker,
+    anweight, eisced_original, income_group_missing, cgtsmke, cgtsday, cgtsmok, eisced, hinctnta, hincfel, mnactic, isco08, maritalb, gndr
+  )
+```
+
+This chunk checks the final sample size, number of countries, and missingness in key variables after the sample restrictions have been applied.
+
+```{r check-final-cleaned-sample}
+ess_clean %>%
+  summarise(
+    respondents = n(),
+    countries = n_distinct(cntry),
+    missing_daily_smoker = sum(is.na(daily_smoker)),
+    missing_education = sum(is.na(education)),
+    missing_income = sum(is.na(income_group))
+  )
+
+freq_table(ess_clean, survey_year)
+freq_table(ess_clean, daily_smoker)
+freq_table(ess_clean, education)
+freq_table(ess_clean, income_group)
+freq_table(ess_clean, income_group_missing)
+```
+
+## 7. Check Missingness in Main Analysis Variables
+
+This chunk calculates the number and percentage of missing values for the main analysis variables.
+
+```{r main-variable-missingness}
+analysis_vars <- c(
+  "daily_smoker", "daily_10plus_smoker", "current_smoking", "ever_smoking", "education", "income_group", "income_decile", "income_feeling", "employment", "occupation", "sex", "agea", "age_group", "marital","income_group_missing"
+)
+
+missingness <- ess_clean %>%
+  summarise(across(
+    all_of(analysis_vars),
+    list(
+      n_missing = ~ sum(is.na(.)),
+      percent_missing = ~ round(100 * mean(is.na(.)), 1)
+    )
+  )) %>%
+  pivot_longer(
+    everything(),
+    names_to = c("variable", ".value"),
+    names_pattern = "(.+)_(n_missing|percent_missing)"
+  )
+
+missingness
+```
+
+
+
+## 8. Cleaning checks and local export
+
+All counts above are unweighted cleaning diagnostics, not survey estimates.
+Weights are retained without modification; no survey design or weight validity
+is established here. The raw income-reason summaries precede final sample
+restrictions; the final missingness table describes the restricted sample.
+
+```{r validate-derived-fields}
+for (var in c("daily_smoker", "daily_10plus_smoker", "current_smoking", "ever_smoking")) {
+  stopifnot(all(is.na(ess_clean[[var]]) | ess_clean[[var]] %in% c(0, 1)))
+}
+stopifnot(all(ess_clean$agea >= minimum_age))
+stopifnot(!any(ess_clean$cntry %in% exclude_countries))
+stopifnot(!anyDuplicated(ess_clean[c("survey_year", "source_row")]))
+# Preserve unknown cigarette counts for daily smokers.
+stopifnot(all(is.na(ess_clean$daily_10plus_smoker[
+  ess_clean$survey_year == "2014" & !is.na(ess_clean$cgtsmke) &
+  ess_clean$cgtsmke == 1 & is.na(ess_clean$cgtsday)])))
+```
+
+Outputs are written locally and must not be uploaded to the public repository.
+Existing files with these names are replaced on re-running.
+
+```{r save-clean-data}
+saveRDS(ess_clean, file.path(output_dir, "ess_clean.rds"))
+write_csv(ess_clean, file.path(output_dir, "ess_clean.csv"))
+write_csv(sample_flow, file.path(output_dir, "sample_flow.csv"))
+write_csv(missingness, file.path(output_dir, "missingness.csv"))
+```
+
+## Documentation and session information
+
+- [European Social Survey data portal](https://www.europeansocialsurvey.org/data-portal).
+  Record the exact Round 7 and Round 11 edition citations and download dates for
+  your local input files; these were not provided with this code-only upload.
+- [ESS Round 11 source questionnaire](https://www.europeansocialsurvey.org/sites/default/files/2024-01/ESS%20Round%2011%20Source%20Questionnaire_FINAL_Alert%2004.pdf).
+  Consult round-specific documentation for all source codes and skip patterns.
+
+```{r session-info}
+sessionInfo()
+```

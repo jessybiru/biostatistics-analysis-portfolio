@@ -1,0 +1,15 @@
+data/
+outputs/
+*.csv
+*.tsv
+*.dta
+*.xlsx
+*.rds
+*.RData
+*.Rhistory
+*.html
+*.pdf
+*_files/
+*_cache/
+.Rproj.user/
+.DS_Store
